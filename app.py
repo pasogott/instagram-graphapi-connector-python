@@ -3,6 +3,7 @@ import json
 import requests
 from flask import Flask, request, redirect, jsonify
 from dotenv import load_dotenv
+import time
 
 # .env-Datei laden
 load_dotenv()
@@ -67,7 +68,7 @@ def webhook():
         return hub_challenge if hub_challenge else "<p>This is GET Request, Hello webhook</p>"
 
 # Instagram Login
-redirect_uri = "https://3fbc-80-108-89-100.ngrok-free.app/your_insta_token"
+redirect_uri = "https://2d9a-80-108-89-100.ngrok-free.app/your_insta_token"
 
 @app.route("/login")
 def login():
@@ -227,6 +228,59 @@ def poste_bild():
     data = response.json()
 
     return jsonify({"media_id": data["id"]}) if "id" in data else jsonify({"Fehler": data}), 400
+
+@app.route("/poste_reel")
+def poste_reel():
+    video_url = "https://files.catbox.moe/gsbgfo.mp4"
+    caption = "Test-Reel_3"
+    access_token = os.getenv("LONG_LIVED_TOKEN")
+    ig_user_id = os.getenv("IG_USER_ID")
+
+    if not ig_user_id or not access_token:
+        return jsonify({"Fehler": "IG_USER_ID oder LONG_LIVED_TOKEN fehlt"}), 400
+
+    # Schritt 1: Medienobjekt erstellen (über Instagram Graph API)
+    create_url = f"https://graph.instagram.com/{ig_user_id}/media"
+    payload = {
+        "media_type": "REELS",
+        "video_url": video_url,
+        "caption": caption,
+        "access_token": access_token
+    }
+
+    response = requests.post(create_url, data=payload)
+    result = response.json()
+
+    if "id" not in result:
+        return jsonify({"Fehler beim Erstellen des Reels": result}), 400
+
+    creation_id = result["id"]
+
+    # Instagram braucht Zeit, um das Reel zu verarbeiten
+    time.sleep(20)  # 10 Sekunden Pause – du kannst’s auch erhöhen, wenn nötig
+
+    # Schritt 2: Reel veröffentlichen
+    publish_url = f"https://graph.instagram.com/{ig_user_id}/media_publish"
+    publish_payload = {
+        "creation_id": creation_id,
+        "access_token": access_token
+    }
+
+    publish_response = requests.post(publish_url, data=publish_payload)
+    publish_result = publish_response.json()
+
+    if "id" in publish_result:
+        return jsonify({
+            "message": "Reel erfolgreich gepostet!",
+            "media_id": publish_result["id"]
+        })
+    else:
+        return jsonify({
+            "Fehler beim Veröffentlichen des Reels": publish_result
+        }), 400
+
+
+
 
 # App starten
 if __name__ == "__main__":
