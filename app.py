@@ -68,7 +68,7 @@ def webhook():
         return hub_challenge if hub_challenge else "<p>This is GET Request, Hello webhook</p>"
 
 # Instagram Login
-redirect_uri = "https://2d9a-80-108-89-100.ngrok-free.app/your_insta_token"
+redirect_uri = "https://ed6e-80-108-89-100.ngrok-free.app/your_insta_token"
 
 @app.route("/login")
 def login():
@@ -257,7 +257,7 @@ def poste_reel():
     creation_id = result["id"]
 
     # Instagram braucht Zeit, um das Reel zu verarbeiten
-    time.sleep(20)  # 10 Sekunden Pause – du kannst’s auch erhöhen, wenn nötig
+    time.sleep(20)  # 20 Sekunden Pause (je nach Größe des Videos kann es variieren)
 
     # Schritt 2: Reel veröffentlichen
     publish_url = f"https://graph.instagram.com/{ig_user_id}/media_publish"
@@ -279,7 +279,132 @@ def poste_reel():
             "Fehler beim Veröffentlichen des Reels": publish_result
         }), 400
 
+def wait_for_finish(creation_id, access_token, retries=10, delay=5):
+    """
+    Wartet darauf, dass Instagram das Carousel verarbeitet.
+    """
+    status_url = f"https://graph.instagram.com/{creation_id}"
+    params = {
+        "fields": "status_code",
+        "access_token": access_token
+    }
+    for _ in range(retries):
+        response = requests.get(status_url, params=params)
+        data = response.json()
+        if data.get("status_code") == "FINISHED":
+            return True
+        time.sleep(delay)
+    return False
 
+# Hilfsfunktion zum Upload einer Media-Item (Bild oder Video)
+def upload_media_item(ig_user_id, item, access_token):
+    """
+    Lädt ein Bild oder Video hoch und gibt die Container-ID zurück.
+    """
+    base_url = f"https://graph.instagram.com/{ig_user_id}/media"
+
+    if item["type"].upper() == "VIDEO":
+        # Schritt 1: Video-Container (resumable) anlegen
+        payload = {
+            "media_type": "VIDEO",
+            "upload_type": "resumable",
+            "video_url": item["url"],
+            "is_carousel_item": True,
+            "access_token": access_token
+        }
+        resp = requests.post(base_url, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+        container_id = data.get("id")
+        upload_url = data.get("upload_url")
+        if not upload_url or not container_id:
+            raise RuntimeError(f"Fehler beim Erstellen des Video-Containers: {data}")
+
+        # Schritt 2: Videodaten an rupload-facebook.com senden
+        # Hier wird der Download-Link genutzt (öffentlich) für das resumable-Upload
+        upload_resp = requests.post(
+            upload_url,
+            headers={
+                "Authorization": f"OAuth {access_token}",
+                "Content-Type": "application/octet-stream"
+            },
+            data=requests.get(item["url"]).content
+        )
+        upload_resp.raise_for_status()
+
+        # Auf Verarbeitung warten
+        if not wait_for_finish(container_id, access_token):
+            raise RuntimeError("Video-Verarbeitung timed out")
+
+        return container_id
+    else:
+        # Bild hochladen: einfacher One-Step-Upload
+        payload = {
+            "image_url": item["url"],
+            "is_carousel_item": True,
+            "access_token": access_token
+        }
+        resp = requests.post(base_url, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+        if "id" not in data:
+            raise RuntimeError(f"Fehler beim Bild-Upload: {data}")
+        return data["id"]
+
+@app.route("/post_carousel")
+def post_carousel():
+    # Gemischte Medienliste
+    media_items = [
+        {"url": "https://www.flugninja.at/assets/images/flugninja_logo.png", "type": "IMAGE"},
+        {"url": "https://www.flugninja.at/assets/images/flugninja_logo.png", "type": "IMAGE"},
+        {"url": "https://www.flugninja.at/assets/images/flugninja_logo.png", "type": "IMAGE"}
+        # {"url": "https://files.catbox.moe/gsbgfo.mp4", "type": "VIDEO"},
+        # {"url": "https://files.catbox.moe/gsbgfo.mp4", "type": "VIDEO"}
+    ]
+    caption = "Test_Carousel_mit_Video"
+    access_token = os.getenv("LONG_LIVED_TOKEN")
+    ig_user_id = os.getenv("IG_USER_ID")
+
+    if not ig_user_id or not access_token:
+        return jsonify({"error": "IG_USER_ID oder LONG_LIVED_TOKEN fehlt"}), 400
+
+    # Items hochladen
+    media_ids = []
+    try:
+        for item in media_items:
+            media_id = upload_media_item(ig_user_id, item, access_token)
+            media_ids.append(media_id)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    # Carousel-Container erstellen
+    create_url = f"https://graph.instagram.com/{ig_user_id}/media"
+    carousel_payload = {
+        "media_type": "CAROUSEL",
+        "children": ",".join(media_ids),
+        "caption": caption,
+        "access_token": access_token
+    }
+    create_resp = requests.post(create_url, json=carousel_payload)
+    if create_resp.status_code != 200:
+        return jsonify({"error_creating_carousel": create_resp.json()}), create_resp.status_code
+    creation_id = create_resp.json().get("id")
+
+    # Auf Verarbeitung warten
+    if not wait_for_finish(creation_id, access_token):
+        return jsonify({"error": "Carousel-Verarbeitung timed out"}), 500
+
+    # Veröffentlichen
+    publish_url = f"https://graph.instagram.com/{ig_user_id}/media_publish"
+    publish_payload = {"creation_id": creation_id, "access_token": access_token}
+    publish_resp = requests.post(publish_url, json=publish_payload)
+    if publish_resp.status_code != 200:
+        return jsonify({"error_publishing": publish_resp.json()}), publish_resp.status_code
+
+    return jsonify({"message": "Karussell erfolgreich gepostet!", "media_id": publish_resp.json().get("id")})
+
+if __name__ == "__main__":
+    app.run(debug=True)
 
 
 # App starten
